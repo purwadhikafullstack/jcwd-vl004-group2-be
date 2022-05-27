@@ -6,7 +6,13 @@ const Admin = require('../models/Admin');
 module.exports = {
   getAdmins: async (req, res) => {
     try {
-      const { limit, currentPage, sort, keyword } = req.body;
+      if (!req.admin.is_super) {
+        return res.status(409).send(`You don't have authorization to perform this action`);
+      }
+
+      const { limit, currentPage, sort } = req.body;
+
+      const { keyword } = req.query;
 
       const query = {
         limit,
@@ -35,23 +41,28 @@ module.exports = {
 
       const { rows, count } = await Admin.findAndCountAll(query);
 
-      const totalAdmins = await Admin.count();
+      const maxPage = Math.ceil(count / limit) || 1;
 
-      const maxPage = Math.ceil(count / limit);
-
-      res.status(200).send({ rows, count, maxPage, totalAdmins });
+      res.status(200).send({ rows, count, maxPage, totalAdmins: count });
     } catch (err) {
       res.status(500).send(err);
     }
   },
   createAdmin: async (req, res) => {
     try {
-      const { data, limit } = req.body;
+      if (!req.admin.is_super) {
+        return res.status(409).send(`You don't have authorization to perform this action`);
+      }
+
+      const { data, limit, currentPage } = req.body;
 
       data.password = Crypto.createHmac('sha1', 'hash123').update(data.password).digest('hex');
 
-      const usernameCheck = await Admin.findOne({ where: { username: data.username } });
-      const emailCheck = await Admin.findOne({ where: { email: data.email } });
+      const usernameCheck = await Admin.findOne({
+        where: { username: data.username },
+        paranoid: false,
+      });
+      const emailCheck = await Admin.findOne({ where: { email: data.email }, paranoid: false });
 
       if (usernameCheck) {
         res.send({ conflict: 'This username has already been used!' });
@@ -60,13 +71,16 @@ module.exports = {
       } else {
         await Admin.create(data);
 
-        const rows = await Admin.findAll({ limit });
+        const { rows, count } = await Admin.findAndCountAll({ limit, offset: currentPage * limit - limit });
 
-        const maxPage = Math.ceil(rows / limit);
+        const maxPage = Math.ceil(count / limit) || 1;
 
-        const totalAdmins = await Admin.count();
-
-        res.status(201).send({ message: 'Admin account created successfully!', rows, maxPage, totalAdmins });
+        res.status(201).send({
+          message: 'Admin account created successfully!',
+          rows,
+          maxPage,
+          totalAdmins: count,
+        });
       }
     } catch (err) {
       res.status(500).send(err);
@@ -74,17 +88,30 @@ module.exports = {
   },
   deleteAdmin: async (req, res) => {
     try {
-      const { limit } = req.body;
+      if (!req.admin.is_super) {
+        return res.status(409).send(`You don't have authorization to perform this action`);
+      }
+
+      const { limit, currentPage } = req.body;
+
+      const admin = await Admin.findByPk(req.params.id, { attributes: ['is_super'] });
+
+      if (admin.is_super) {
+        return res.send({ conflict: true, message: 'This account cannot be deactivated!' });
+      }
 
       await Admin.destroy({ where: { id: req.params.id } });
 
-      const rows = await Admin.findAll({ limit });
+      const { rows, count } = await Admin.findAndCountAll({ limit, offset: currentPage * limit - limit });
 
-      const maxPage = Math.ceil(rows / limit);
+      const maxPage = Math.ceil(count / limit) || 1;
 
-      const totalAdmins = await Admin.count();
-
-      res.status(200).send({ message: 'Admin account deleted successfully!', rows, maxPage, totalAdmins });
+      res.status(200).send({
+        message: 'Account deactivated successfully!',
+        rows,
+        maxPage,
+        totalAdmins: count,
+      });
     } catch (err) {
       res.status(500).send(err);
     }

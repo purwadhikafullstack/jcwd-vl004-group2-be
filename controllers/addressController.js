@@ -5,8 +5,29 @@ module.exports = {
     try {
       const { limit, data, currentPage } = req.body;
 
+      const totalAddress = await Address.count({ where: { userId: req.user.id } });
+
+      if (totalAddress >= 10) {
+        return res.send({ conflict: 'Cannot have more than 10 addresses' });
+      }
+
+      const existingAddress = await Address.findOne({
+        where: {
+          address: data.address,
+          city: data.city,
+          country: data.country,
+          province: data.province,
+          postalcode: data.postalcode,
+          userId: req.user.id,
+        },
+      });
+
+      if (existingAddress) {
+        return res.send({ conflict: 'This address already exist' });
+      }
+
       if (data.is_default) {
-        await Address.update({ is_default: false }, { where: { userId: req.user.id } });
+        await Address.update({ is_default: false }, { where: { userId: req.user.id, is_default: true } });
       }
 
       await Address.create({ ...data, userId: req.user.id });
@@ -15,6 +36,7 @@ module.exports = {
         where: { userId: req.user.id },
         limit,
         offset: currentPage * limit - limit,
+        attributes: { exclude: ['createdAt', 'updatedAt', 'deletedAt'] },
         order: [['is_default', 'desc']],
       });
 
@@ -36,6 +58,7 @@ module.exports = {
         where: { userId: req.user.id },
         limit,
         offset: limit * currentPage - limit,
+        attributes: { exclude: ['createdAt', 'updatedAt', 'deletedAt'] },
         order: [['is_default', 'desc']],
       });
 
@@ -54,6 +77,7 @@ module.exports = {
         where: { userId: req.user.id },
         limit,
         offset: limit * currentPage - limit,
+        attributes: { exclude: ['createdAt', 'updatedAt', 'deletedAt'] },
         order: [['is_default', 'desc']],
       });
 
@@ -66,7 +90,7 @@ module.exports = {
     try {
       const { limit, currentPage } = req.body;
 
-      await Address.update({ is_default: false }, { where: { userid: req.user.id } });
+      await Address.update({ is_default: false }, { where: { userId: req.user.id, is_default: true } });
 
       await Address.update({ is_default: true }, { where: { id: req.params.id } });
 
@@ -74,10 +98,11 @@ module.exports = {
         where: { userId: req.user.id },
         limit,
         offset: limit * currentPage - limit,
+        attributes: { exclude: ['createdAt', 'updatedAt', 'deletedAt'] },
         order: [['is_default', 'desc']],
       });
 
-      res.status(200).send({ rows, maxPage: Math.ceil(count / limit) || 1, count });
+      res.status(200).send({ message: 'Default address changed!', rows, maxPage: Math.ceil(count / limit) || 1, count });
     } catch (err) {
       res.status(500).send(err);
     }

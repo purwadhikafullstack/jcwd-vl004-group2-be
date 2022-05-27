@@ -1,6 +1,6 @@
+require('dotenv').config();
 const router = require('express').Router();
 const passport = require('passport');
-const CLIENT_URL = 'http://localhost:3000/';
 const { createToken, verifyToken, verifyPasswordToken, verifyVerificationToken } = require('../configs/jwtuser');
 const Cart = require('../models/Cart');
 
@@ -18,22 +18,28 @@ router.get('/google', passport.authenticate('google'));
 router.get(
   '/google/callback',
   passport.authenticate('google', {
-    successRedirect: CLIENT_URL,
+    successRedirect: process.env.CLIENT_URL,
     failureRedirect: '/login/failed',
   })
 );
 
 router.get('/login/success', async (req, res) => {
   if (req.user) {
-    const token = createToken({
-      id: req.user.id,
-      name: req.user.name,
-      email: req.user.email,
-    });
+    if (!req.user.active) {
+      req.session = null;
 
-    const cartTotal = await Cart.count({ where: { userId : req.user.id }})
+      res.send({ conflict: true, message: 'This account is currently inactive!' });
+    } else {
+      const token = createToken({
+        id: req.user.id,
+        name: req.user.name,
+        email: req.user.email,
+      });
 
-    res.status(200).send({ user: req.user, token, cartTotal });
+      const cartTotal = await Cart.count({ where: { userId: req.user.id } });
+
+      res.status(200).send({ user: req.user, token, cartTotal });
+    }
   } else {
     res.send({ ignore: true });
   }
@@ -45,7 +51,7 @@ router.get('/login/failed', (req, res) => {
 
 router.get('/logout', (req, res) => {
   req.logOut();
-  res.redirect(CLIENT_URL);
+  res.redirect(process.env.CLIENT_URL);
 });
 
 module.exports = router;

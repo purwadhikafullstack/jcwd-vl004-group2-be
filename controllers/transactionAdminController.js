@@ -17,8 +17,7 @@ module.exports = {
   getTransaction: async (req, res) => {
     try {
       // sort and { sort } is different
-      const { sort, startDate, endDate, status, page, limit } = req.body;
-      const offset = (page - 1) * limit;
+      const { sort, startDate, endDate, status, limit, offset } = req.body;
 
       const { keyword } = req.query;
 
@@ -29,7 +28,7 @@ module.exports = {
       }
 
       if (status) {
-        query.where = { ...query.where, status };
+        query.where = { ...query.where, status: status };
       }
       if (startDate || endDate) {
         query.where = {
@@ -44,7 +43,6 @@ module.exports = {
         query.where = {
           ...query.where,
           [Op.or]: {
-            status: { [Op.substring]: keyword },
             notes: { [Op.substring]: keyword },
             '$user.name$': { [Op.substring]: keyword },
             '$address.address$': { [Op.substring]: keyword },
@@ -65,7 +63,7 @@ module.exports = {
           },
           {
             model: DeliveryOption,
-            attributes: ['name'],
+            attributes: ['name', 'cost'],
             required: true,
             paranoid: false,
           },
@@ -73,7 +71,13 @@ module.exports = {
           {
             model: InvoiceItem,
             attributes: ['price', 'quantity', 'id'],
-            include: [{ model: Product, attributes: ['name', 'image'], paranoid: false }],
+            include: [
+              {
+                model: Product,
+                attributes: ['name', 'image'],
+                paranoid: false,
+              },
+            ],
           },
         ],
         distinct: true,
@@ -149,7 +153,7 @@ module.exports = {
             to: `${transaction.user.email}`,
             subject: `Payment Approved for Invoice #${transaction.id}`,
             html: `
-            <p>Dear, ${transaction.user.name}</p>
+            <p>Dear ${transaction.user.name},</p>
             <br/>
             <p>We are glad to inform you that we have approved the payment you've made for Invoice #${transaction.id}!</p>
             <P>Please kindly wait while we get your order ready and shipped it to you immediately!</p>
@@ -169,6 +173,12 @@ module.exports = {
           message: 'Invoice updated successfully!',
           userId: transaction.userId,
         });
+      } else {
+        res.send({
+          conflict: true,
+          message: 'This invoice status is already updated!',
+          status: transaction.status,
+        });
       }
     } catch (error) {
       res.status(500).send(error);
@@ -182,14 +192,25 @@ module.exports = {
         include: [
           {
             model: InvoiceItem,
-            attributes: ['price', 'quantity', 'subtotal', 'id'],
+            attributes: ['price', 'quantity', 'subtotal'],
             include: [
               {
                 model: Product,
-                attributes: ['name', 'image', 'unit'],
+                attributes: ['id', 'name', 'image', 'unit', 'volume'],
                 paranoid: false,
               },
             ],
+          },
+          { model: User, attributes: ['name', 'email', 'phone_number'] },
+          {
+            model: Address,
+            attributes: ['address', 'city', 'province', 'country', 'postalcode'],
+            paranoid: false,
+          },
+          {
+            model: DeliveryOption,
+            attributes: ['name', 'cost'],
+            paranoid: false,
           },
         ],
       });
@@ -204,46 +225,59 @@ module.exports = {
           }
         );
 
-        setTimeout(async () => {
-          await Message.create({
-            userId: transaction.userId,
-            to: 'user',
-            adminId: id,
-            header: `Payment Rejected for Invoice #${transaction.id}`,
-            content: `Hello, ${transaction.user.name}!|We're sorry to inform you that we have rejected the payment you've made for Invoice #${transaction.id}.|Furthermore, in line with our applied terms and conditions, you will received your money back in 1x24h time. If you have any questions just send us an email at admin@heizenbergco.com|Regards,`,
-          });
-        }, 1000);
+        await transaction.invoiceitems.map((item) => {
+          Product.increment(
+            { stock: Math.floor(item.quantity / item.product.volume), stock_in_unit: item.quantity },
+            { where: { id: item.product.id } }
+          );
+        });
+
+        await Message.create({
+          userId: transaction.userId,
+          to: 'user',
+          adminId: id,
+          header: `Payment Rejected for Invoice #${transaction.id}`,
+          content: `Dear ${transaction.user.name},|We're sorry to inform you that we have rejected the payment you've made for Invoice #${transaction.id}.|Furthermore, in line with our applied terms and conditions, you will received your money back in 1x24h time. If you have any questions do not hesitate to send us an email at admin@heizenbergco.com|Regards,`,
+        });
 
         const invoicePdfPath = await generatePdf(transaction);
-
-        await transporter.sendMail({
-          from: 'HeizenbergAdmin <admin@heizenbergco.com>',
-          to: `${transaction.user.email}`,
-          subject: `Payment Rejected for Invoice #${transaction.id}`,
-          html: `
-          <p>Dear, ${transaction.user.name}</p>
-          <br/>
-          <p>We're sorry to inform you that we have rejected the payment you've made for Invoice #${transaction.id}.</p>
-          <P>Furthermore, in line with our applied terms and conditions, you will received your money back in 1x24h time.</p>
-          <p>If you have any questions just send us an email at admin@heizenbergco.com</p>
-          <p>Regards, </p>
-          <p><b>The Heizen Berg Co. Admin Team</b></p>`,
-          attachments: [
-            {
-              filename: `${transaction.user.name.replace(' ', '')}_invoice_${transaction.id}.pdf`,
-              path: path.resolve(invoicePdfPath),
-              contentType: 'application/pdf',
-            },
-          ],
-        });
 
         transaction.invoice_path = invoicePdfPath;
 
         await transaction.save();
 
+        setTimeout(async () => {
+          await transporter.sendMail({
+            from: 'HeizenbergAdmin <admin@heizenbergco.com>',
+            to: `${transaction.user.email}`,
+            subject: `Payment Rejected for Invoice #${transaction.id}`,
+            html: `
+            <p>Dear ${transaction.user.name},</p>
+            <br/>
+            <p>We're sorry to inform you that we have rejected the payment you've made for Invoice #${transaction.id}.</p>
+            <P>Furthermore, in line with our applied terms and conditions, you will received your money back in 1x24h time.</p>
+            <p>If you have any questions do not hesitate to send us an email at admin@heizenbergco.com</p>
+            <p>Regards, </p>
+            <p><b>The Heizen Berg Co. Admin Team</b></p>`,
+            attachments: [
+              {
+                filename: `${transaction.user.name.replace(' ', '')}_invoice_${transaction.id}.pdf`,
+                path: path.resolve(invoicePdfPath),
+                contentType: 'application/pdf',
+              },
+            ],
+          });
+        }, 1000);
+
         res.status(200).send({
           message: 'Invoice updated successfully!',
           userId: transaction.userId,
+        });
+      } else {
+        res.send({
+          conflict: true,
+          message: 'This invoice status is already updated!',
+          status: transaction.status,
         });
       }
     } catch (error) {

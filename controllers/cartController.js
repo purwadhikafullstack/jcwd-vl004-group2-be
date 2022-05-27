@@ -1,5 +1,6 @@
 const Cart = require('../models/Cart');
 const Product = require('../models/Product');
+const Category = require('../models/Category');
 const sequelize = require('../configs/sequelize');
 const { Op } = require('sequelize');
 
@@ -79,11 +80,15 @@ module.exports = {
     try {
       const { productId, userId, quantity } = req.body;
 
-      const productData = await Product.findByPk(productId);
+      const productData = await Product.findByPk(productId, {
+        attributes: { exclude: ['createdAt', 'updatedAt'] },
+        include: { model: Category, attributes: ['name'] },
+        paranoid: false,
+      });
 
       if (productData.deletedAt) {
         return res.send({
-          conflict: true,
+          deleted: true,
           message: `This product has already been removed from store!`,
         });
       }
@@ -92,37 +97,35 @@ module.exports = {
         return res.send({
           conflict: true,
           message: `Current stock insufficient!`,
+          productData,
         });
       }
 
       const userCart = await Cart.findOne({
         where: { userId, productId },
-        include: Product,
+        attributes: ['id', 'quantity'],
       });
 
       if (userCart) {
-        if (userCart.quantity + quantity > userCart.product.stock_in_unit) {
+        if (userCart.quantity + quantity > productData.stock_in_unit) {
           return res.send({
             conflict: true,
-            message: `Cannot update this cart item quantity as you already had ${userCart.quantity.toLocaleString('id')} ${
-              userCart.product.unit
+            message: `Cannot update this item quantity as you already had ${userCart.quantity.toLocaleString('id')}${
+              productData.unit
             } in your cart`,
+            productData,
           });
         } else {
-          userCart.quantity = userCart.quantity + quantity;
+          await Cart.increment({ quantity }, { where: { id: userCart.id } });
 
-          await userCart.save();
-
-          const cartTotal = await Cart.count({ where: { userId } });
-
-          res.status(200).send({ message: 'Updated cart item quantity!', cartTotal });
+          res.status(200).send({ message: 'Updated this item quantity!', productData });
         }
       } else {
         await Cart.create({ userId, productId, quantity });
 
         const cartTotal = await Cart.count({ where: { userId } });
 
-        res.status(200).send({ message: 'Added this item to your cart!', cartTotal });
+        res.status(201).send({ message: 'Added this item to your cart!', productData, cartTotal });
       }
     } catch (err) {
       res.status(500).send(err);

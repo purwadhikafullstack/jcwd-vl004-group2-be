@@ -37,7 +37,8 @@ module.exports = {
           }
         );
       }
-      res.status(200).send(user);
+      const updatedUser = await User.findByPk(req.params.id);
+      res.status(200).send(updatedUser.active);
     } catch (error) {
       res.status(500).send(error);
     }
@@ -53,7 +54,7 @@ module.exports = {
   },
   query: async (req, res) => {
     try {
-      const { name, active, limit } = req.body;
+      const { active, limit, offset, sort } = req.body;
 
       const query = {
         limit,
@@ -67,12 +68,17 @@ module.exports = {
           [Op.or]: {
             name: { [Op.substring]: keyword },
             email: { [Op.substring]: keyword },
+            phone_number: { [Op.substring]: keyword },
           },
         };
       }
 
-      if (name) {
-        query.where = { ...query.where, name: { [Op.substring]: name } };
+      if (sort) {
+        query.order = [sort.split(",")];
+      }
+
+      if (offset) {
+        query.offset = offset;
       }
 
       if (active) {

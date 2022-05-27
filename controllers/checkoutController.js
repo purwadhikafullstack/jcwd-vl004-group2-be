@@ -11,11 +11,25 @@ const { paymentUploader } = require('../configs/uploader');
 const fs = require('fs');
 const Message = require('../models/Message');
 const PaymentMethod = require('../models/PaymentMethod');
+const { Op } = require('sequelize');
 
 module.exports = {
   addCheckout: async (req, res) => {
     try {
       let { notes, addressId, deliveryoptionId, orderItems, paymentmethodId } = req.body.dataCheckout;
+
+      // check stock product
+      for (let i = 0; i < orderItems.length; i++) {
+        let notAvailable = await Product.findOne({
+          where: {
+            id: orderItems[i].product.id,
+            [Op.or]: { stock_in_unit: 0, deletedAt: { [Op.not]: null } },
+          },
+        });
+        if (notAvailable) {
+          throw new Error('there are product not available!');
+        }
+      }
 
       // create invoice header
       const newInvoiceHeader = await InvoiceHeader.create(
@@ -105,14 +119,49 @@ module.exports = {
     try {
       const { address, city, province, country, postalcode } = req.body;
 
-      await Address.create({
-        address,
-        city,
-        province,
-        country,
-        postalcode,
-        userId: req.user.id,
+      const totalAddress = await Address.count({ where: { userId: req.user.id } });
+
+      if (totalAddress >= 10) {
+        return res.send({ conflict: 'Cannot have more than 10 addresses' });
+      }
+
+      const existingAddress = await Address.findOne({
+        where: {
+          address,
+          city,
+          country,
+          province,
+          postalcode,
+          userId: req.user.id,
+        },
       });
+
+      const defaultAddress = await Address.findOne({
+        where: { userId: req.user.id, is_default: true },
+      });
+
+      if (existingAddress) {
+        return res.send({ conflict: 'This address already exist' });
+      } else if (defaultAddress) {
+        await Address.create({
+          address,
+          city,
+          province,
+          country,
+          postalcode,
+          userId: req.user.id,
+        });
+      } else {
+        await Address.create({
+          address,
+          city,
+          province,
+          country,
+          postalcode,
+          userId: req.user.id,
+          is_default: true,
+        });
+      }
 
       const response = await Address.findAll({
         where: { userId: req.user.id },
@@ -224,16 +273,22 @@ module.exports = {
           {
             model: InvoiceItem,
             attributes: ['quantity', 'productId'],
-            include: [{ model: Product, attributes: ['stock_in_unit', 'volume'] }],
+            include: [
+              {
+                model: Product,
+                attributes: ['stock_in_unit', 'volume'],
+                paranoid: false,
+              },
+            ],
           },
         ],
       });
 
-      await invoiceData.invoiceitems.forEach((item) => {
-        Product.update(
+      invoiceData.invoiceitems.forEach(async (item) => {
+        await Product.increment(
           {
-            stock_in_unit: item.product.stock_in_unit + item.quantity,
-            stock: Math.floor((item.product.stock_in_unit + item.quantity) / item.product.volume),
+            stock_in_unit: item.quantity,
+            stock: Math.floor(item.quantity / item.product.volume),
           },
           { where: { id: item.productId } }
         );
@@ -285,6 +340,16 @@ module.exports = {
   },
   getAwaiting: async (req, res) => {
     try {
+      // check stock product
+      let notAvailable = await InvoiceItem.findAll({
+        where: {
+          invoiceheaderId: req.params.id,
+          '$product.deletedAt$': { [Op.not]: null },
+        },
+        include: [{ model: Product, paranoid: false }],
+      });
+
+      // get data
       const response = await InvoiceHeader.findOne({
         where: { id: req.params.id, userId: req.user.id, status: 'awaiting' },
         attributes: [
@@ -305,7 +370,10 @@ module.exports = {
         ],
       });
 
-      res.status(200).send({ data: response });
+      res.status(200).send({
+        data: response,
+        notAvailable: notAvailable.length ? true : false,
+      });
     } catch (error) {
       res.status(500).send({ message: error.message });
     }
